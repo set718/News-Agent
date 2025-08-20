@@ -255,7 +255,7 @@ class ContentAnalyzer:
             }
         }
     
-    def generate_summary_report(self, days: int = 7) -> str:
+    def generate_summary_report(self, days: int = 1) -> str:
         """生成筛选摘要报告"""
         # 获取筛选通过的文章
         selected_articles = db_manager.get_selected_articles(days=days)
@@ -330,7 +330,7 @@ if __name__ == "__main__":
             
             # 生成报告
             analyzer = ContentAnalyzer(filter_instance)
-            report = analyzer.generate_summary_report(days=7)
+            report = analyzer.generate_summary_report(days=1)
             print("\n" + report)
         else:
             print("没有找到未处理的文章，请先运行邮件获取程序")

@@ -50,7 +50,7 @@ class GoogleAlertProcessor:
             print(f"✗ 初始化失败: {e}")
             sys.exit(1)
     
-    def fetch_and_store_emails(self, days: int = 7) -> List[GoogleAlertEmail]:
+    def fetch_and_store_emails(self, days: int = 1) -> List[GoogleAlertEmail]:
         """
         获取并存储Google Alert邮件
         
@@ -140,7 +140,7 @@ class GoogleAlertProcessor:
             print(f"✗ 文章筛选失败: {e}")
             return {}
     
-    def generate_report(self, days: int = 7) -> str:
+    def generate_report(self, days: int = 1) -> str:
         """
         生成筛选报告
         
@@ -175,7 +175,7 @@ class GoogleAlertProcessor:
             print(f"✗ 报告生成失败: {e}")
             return ""
     
-    def run_full_workflow(self, days: int = 7, filter_limit: int = 50):
+    def run_full_workflow(self, days: int = 1, filter_limit: int = 50):
         """
         运行完整工作流程
         
@@ -213,14 +213,14 @@ class GoogleAlertProcessor:
 def main():
     """主函数 - 命令行接口"""
     parser = argparse.ArgumentParser(description='Google Alert 邮件处理和筛选系统')
-    parser.add_argument('--days', type=int, default=7, help='获取最近几天的邮件 (默认: 7)')
+    parser.add_argument('--days', type=int, default=1, help='获取最近几天的邮件 (默认: 1)')
     parser.add_argument('--limit', type=int, default=50, help='筛选文章数量限制 (默认: 50)')
     parser.add_argument('--fetch-only', action='store_true', help='仅获取邮件，不进行筛选')
     parser.add_argument('--filter-only', action='store_true', help='仅筛选现有文章，不获取新邮件')
     parser.add_argument('--report-only', action='store_true', help='仅生成报告')
     parser.add_argument('--stats', action='store_true', help='显示数据库统计信息')
     parser.add_argument('--export-excel', action='store_true', help='导出Excel报告')
-    parser.add_argument('--excel-days', type=int, default=7, help='Excel导出天数 (默认: 7)')
+    parser.add_argument('--excel-days', type=int, default=1, help='Excel导出天数 (默认: 1)')
     
     args = parser.parse_args()
     

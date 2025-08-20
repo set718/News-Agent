@@ -295,7 +295,7 @@ if __name__ == "__main__":
     # 测试邮件获取
     try:
         fetcher = EmailFetcher()
-        alerts = fetcher.fetch_google_alerts(days=7)
+        alerts = fetcher.fetch_google_alerts(days=1)
         
         print(f"\n获取到 {len(alerts)} 封 Google Alert 邮件")
         

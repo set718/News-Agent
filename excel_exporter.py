@@ -17,7 +17,7 @@ class ExcelExporter:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
     
-    def export_selected_articles(self, days: int = 7, filename: Optional[str] = None) -> str:
+    def export_selected_articles(self, days: int = 1, filename: Optional[str] = None) -> str:
         """
         导出筛选通过的文章到Excel
         
@@ -222,7 +222,7 @@ class ExcelExporter:
         date_str = datetime.now().strftime("%Y年第%U周")
         filename = f"汽车制造新闻周报_{date_str}.xlsx"
         
-        return self.export_selected_articles(days=7, filename=filename)
+        return self.export_selected_articles(days=1, filename=filename)
     
     def export_monthly_report(self) -> str:
         """导出月报"""
@@ -241,7 +241,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Excel导出测试')
-    parser.add_argument('--days', type=int, default=7, help='导出最近几天的数据')
+    parser.add_argument('--days', type=int, default=1, help='导出最近几天的数据')
     parser.add_argument('--daily', action='store_true', help='导出今日报告')
     parser.add_argument('--weekly', action='store_true', help='导出周报')
     parser.add_argument('--monthly', action='store_true', help='导出月报')

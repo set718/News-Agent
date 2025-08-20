@@ -22,9 +22,15 @@ GMAIL_REDIRECT_URIS = os.getenv('GMAIL_REDIRECT_URIS', 'http://localhost').split
 
 GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
-# DeepSeek API 配置
+# DeepSeek API 配置 (兼容Langchain OpenAI格式)
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+# Langchain 配置
+LANGCHAIN_VERBOSE = os.getenv('LANGCHAIN_VERBOSE', 'false').lower() == 'true'
+LANGCHAIN_MEMORY_TYPE = os.getenv('LANGCHAIN_MEMORY_TYPE', 'simple')  # simple, conversation, summary
+LANGCHAIN_MAX_TOKENS = int(os.getenv('LANGCHAIN_MAX_TOKENS', '1000'))
+LANGCHAIN_TEMPERATURE = float(os.getenv('LANGCHAIN_TEMPERATURE', '0.3'))
 
 # 数据存储配置
 DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///google_alerts.db')

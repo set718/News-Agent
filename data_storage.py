@@ -239,7 +239,7 @@ class DatabaseManager:
         finally:
             session.close()
     
-    def get_selected_articles(self, days: int = 7) -> List[NewsArticle]:
+    def get_selected_articles(self, days: int = 1) -> List[NewsArticle]:
         """
         获取筛选通过的文章
         
