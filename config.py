@@ -29,8 +29,9 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 # Langchain 配置
 LANGCHAIN_VERBOSE = os.getenv('LANGCHAIN_VERBOSE', 'false').lower() == 'true'
 LANGCHAIN_MEMORY_TYPE = os.getenv('LANGCHAIN_MEMORY_TYPE', 'simple')  # simple, conversation, summary
-LANGCHAIN_MAX_TOKENS = int(os.getenv('LANGCHAIN_MAX_TOKENS', '1000'))
+LANGCHAIN_MAX_TOKENS = int(os.getenv('LANGCHAIN_MAX_TOKENS', '4000'))  # 增加以支持批量处理
 LANGCHAIN_TEMPERATURE = float(os.getenv('LANGCHAIN_TEMPERATURE', '0.3'))
+LANGCHAIN_BATCH_SIZE = int(os.getenv('LANGCHAIN_BATCH_SIZE', '5'))  # 批量处理大小
 
 # 数据存储配置
 DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///google_alerts.db')

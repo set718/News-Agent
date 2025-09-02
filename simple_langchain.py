@@ -2,6 +2,7 @@
 简化的Langchain架构实现
 避免复杂的依赖冲突，使用核心Langchain概念重构系统
 """
+import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 import json
@@ -12,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from email_fetcher import EmailFetcher
 from data_storage import db_manager
-from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, CONTENT_FILTER_PROMPT
+from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, CONTENT_FILTER_PROMPT, LANGCHAIN_BATCH_SIZE
 
 
 class FilterResult(BaseModel):
@@ -28,12 +29,15 @@ class FilterResult(BaseModel):
 class LangchainProcessor:
     """基于Langchain的简化处理器"""
     
-    def __init__(self):
+    def __init__(self, batch_size: int = None):
         # 初始化LLM客户端
         self.llm = OpenAI(
             api_key=DEEPSEEK_API_KEY,
             base_url=DEEPSEEK_BASE_URL
         )
+        
+        # 设置批量处理大小
+        self.batch_size = batch_size or LANGCHAIN_BATCH_SIZE
         
         # 初始化提示模板
         self.filter_prompt = PromptTemplate(
@@ -41,14 +45,58 @@ class LangchainProcessor:
             input_variables=["title", "source", "summary", "publish_time", "url"]
         )
         
+        # 初始化批量筛选提示模板
+        self.batch_filter_prompt = PromptTemplate(
+            template="""你是一个专业的新闻内容分析师，负责评估和筛选新闻文章的质量和相关性。
+
+目标用户：汽车行业制造工程师
+关注领域：汽车工厂建设、AI技术、先进制造技术
+
+筛选标准：
+1. 优先保留：
+   - 汽车工厂建设、扩建、技术升级相关
+   - 汽车制造流程、生产线、质量控制
+   - 可应用于汽车工厂的AI技术（工业机器人、机器视觉、数字孪生、预测性维护等）
+   - 先进制造技术（增材制造/3D打印、自动化、智能制造、工业4.0等）
+   - 汽车供应链、材料技术、新能源汽车制造
+
+2. 保留但降低优先级：
+   - 通用制造技术（如果可应用于汽车工厂）
+   - 其他行业的先进制造案例（如果技术可借鉴）
+
+3. 明确剔除：
+   - 政治、社会、娱乐新闻
+   - 仅涉及非汽车行业制造的内容
+   - 汽车销售、市场营销、金融投资类新闻
+   - 与制造工程无关的汽车新闻（如车型发布、测评等）
+
+请分析以下 {num_articles} 篇新闻，并对每篇文章返回筛选结果：
+
+{articles_content}
+
+请返回一个JSON数组，包含 {num_articles} 个筛选结果，格式如下：
+[
+    {{
+        "is_selected": true/false,
+        "quality_score": 1-10的评分（内容深度和价值）,
+        "relevance_score": 1-10的评分（与汽车制造工程的相关性）,
+        "reason": "详细的筛选理由，说明为什么选择或拒绝",
+        "key_points": ["提取的关键技术要点或制造信息"],
+        "category": "分类：汽车工厂建设/AI制造技术/先进制造/供应链技术/其他"
+    }},
+    ...
+]""",
+            input_variables=["num_articles", "articles_content"]
+        )
+        
         # 初始化邮件获取器
         self.email_fetcher = EmailFetcher()
         
-        print("✅ 简化Langchain处理器初始化成功")
+        print(f"简化Langchain处理器初始化成功 (批量大小: {self.batch_size})")
     
     def fetch_emails_chain(self, days: int = 1) -> Dict[str, Any]:
         """邮件获取链"""
-        print(f"\n🔄 执行邮件获取链 (最近 {days} 天)")
+        print(f"\n执行邮件获取链 (最近 {days} 天)")
         
         try:
             # 获取邮件
@@ -86,19 +134,19 @@ class LangchainProcessor:
                 "articles_count": total_new_articles
             }
             
-            print(f"✅ 邮件获取完成: {len(stored_emails)} 封邮件, {total_new_articles} 篇新文章")
+            print(f"邮件获取完成: {len(stored_emails)} 封邮件, {total_new_articles} 篇新文章")
             return result
             
         except Exception as e:
-            print(f"❌ 邮件获取失败: {e}")
+            print(f"邮件获取失败: {e}")
             return {"emails": [], "articles_count": 0}
     
     def filter_articles_chain(self, limit: int = None) -> Dict[str, Any]:
-        """文章筛选链"""
+        """文章筛选链（批量优化版本）"""
         if limit:
-            print(f"\n🤖 执行文章筛选链 (限制 {limit} 篇)")
+            print(f"\n执行文章筛选链 (限制 {limit} 篇，批量大小: {self.batch_size})")
         else:
-            print(f"\n🤖 执行文章筛选链 (处理所有未筛选文章)")
+            print(f"\n执行文章筛选链 (处理所有未筛选文章，批量大小: {self.batch_size})")
         
         # 获取未筛选的文章
         unfiltered_articles = db_manager.get_unfiltered_articles(limit=limit)
@@ -107,7 +155,7 @@ class LangchainProcessor:
             print("没有找到需要筛选的文章")
             return {'total': 0, 'processed': 0, 'selected': 0, 'rejected': 0, 'failed': 0}
         
-        print(f"开始筛选 {len(unfiltered_articles)} 篇文章...")
+        print(f"开始批量筛选 {len(unfiltered_articles)} 篇文章...")
         
         stats = {
             'total': len(unfiltered_articles),
@@ -117,36 +165,45 @@ class LangchainProcessor:
             'failed': 0
         }
         
-        for i, article in enumerate(unfiltered_articles, 1):
-            print(f"处理第 {i}/{len(unfiltered_articles)} 篇: {article.title[:50]}...")
+        # 按批次处理文章
+        for batch_start in range(0, len(unfiltered_articles), self.batch_size):
+            batch_end = min(batch_start + self.batch_size, len(unfiltered_articles))
+            batch_articles = unfiltered_articles[batch_start:batch_end]
+            
+            batch_num = batch_start // self.batch_size + 1
+            total_batches = (len(unfiltered_articles) + self.batch_size - 1) // self.batch_size
+            print(f"处理批次 {batch_num}/{total_batches}: 文章 {batch_start+1}-{batch_end}")
             
             try:
-                # 使用Langchain进行筛选
-                filter_result = self._filter_single_article(article)
+                # 批量筛选这组文章
+                batch_results = self._filter_batch_articles(batch_articles)
                 
-                if filter_result:
-                    # 更新数据库
-                    success = db_manager.update_article_filter_result(article.id, filter_result)
-                    if success:
-                        stats['processed'] += 1
-                        if filter_result.get('is_selected'):
-                            stats['selected'] += 1
-                            print(f"  ✅ 通过筛选")
+                # 处理结果
+                for i, (article, result) in enumerate(zip(batch_articles, batch_results)):
+                    if result:
+                        # 更新数据库
+                        success = db_manager.update_article_filter_result(article.id, result)
+                        if success:
+                            stats['processed'] += 1
+                            if result.get('is_selected'):
+                                stats['selected'] += 1
+                                print(f"  文章 {batch_start+i+1}: 通过")
+                            else:
+                                stats['rejected'] += 1
+                                print(f"  文章 {batch_start+i+1}: 未通过")
                         else:
-                            stats['rejected'] += 1
-                            print(f"  ❌ 未通过筛选")
+                            stats['failed'] += 1
+                            print(f"  文章 {batch_start+i+1}: 数据库更新失败")
                     else:
                         stats['failed'] += 1
-                        print(f"  ⚠️ 数据库更新失败")
-                else:
-                    stats['failed'] += 1
-                    print(f"  ❌ 筛选失败")
+                        print(f"  文章 {batch_start+i+1}: 筛选失败")
                 
             except Exception as e:
-                print(f"  ❌ 处理异常: {e}")
-                stats['failed'] += 1
+                print(f"  批次筛选失败: {e}")
+                # 如果批次失败，标记这批次所有文章为失败
+                stats['failed'] += len(batch_articles)
         
-        print(f"\n✅ 筛选完成:")
+        print(f"\n批量筛选完成:")
         print(f"  - 总计: {stats['total']}")
         print(f"  - 成功处理: {stats['processed']}")
         print(f"  - 筛选通过: {stats['selected']}")
@@ -154,6 +211,119 @@ class LangchainProcessor:
         print(f"  - 处理失败: {stats['failed']}")
         
         return stats
+    
+    def _filter_batch_articles(self, articles: List) -> List[Optional[Dict]]:
+        """批量筛选文章"""
+        try:
+            # 构建文章内容
+            articles_content = ""
+            for i, article in enumerate(articles, 1):
+                articles_content += f"""
+文章 {i}:
+标题：{article.title}
+来源：{article.source or "未知来源"}
+内容摘要：{article.summary or "无摘要"}
+发布时间：{article.publish_time or "未知时间"}
+原文链接：{article.url[:100] + "..." if len(article.url) > 100 else article.url}
+
+"""
+            
+            # 使用批量提示模板
+            prompt = self.batch_filter_prompt.format(
+                num_articles=len(articles),
+                articles_content=articles_content.strip()
+            )
+            
+            # 调用LLM
+            response = self.llm.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "你是一个专业的新闻内容分析师，负责评估和筛选新闻文章的质量和相关性。请严格按照JSON数组格式返回分析结果。"
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=4000  # 增加token限制以支持批量处理
+            )
+            
+            # 解析响应
+            return self._parse_batch_response(response.choices[0].message.content, len(articles))
+            
+        except Exception as e:
+            print(f"批量筛选失败: {e}")
+            return [None] * len(articles)
+
+    def _parse_batch_response(self, response: str, expected_count: int) -> List[Optional[Dict]]:
+        """解析批量API响应"""
+        try:
+            # 尝试提取JSON数组
+            response = response.strip()
+            
+            # 查找JSON数组开始和结束位置
+            start_idx = response.find('[')
+            end_idx = response.rfind(']') + 1
+            
+            if start_idx != -1 and end_idx > start_idx:
+                json_str = response[start_idx:end_idx]
+                results = json.loads(json_str)
+                
+                if not isinstance(results, list):
+                    print(f"响应不是JSON数组格式")
+                    return [None] * expected_count
+                
+                # 验证结果数量
+                if len(results) != expected_count:
+                    print(f"响应数量不匹配：期望 {expected_count}，实际 {len(results)}")
+                    # 调整结果数量
+                    if len(results) < expected_count:
+                        results.extend([None] * (expected_count - len(results)))
+                    else:
+                        results = results[:expected_count]
+                
+                # 验证和清理每个结果
+                cleaned_results = []
+                for i, result in enumerate(results):
+                    if result and isinstance(result, dict):
+                        # 验证必需字段
+                        required_fields = ['is_selected', 'quality_score', 'relevance_score', 'reason']
+                        if all(field in result for field in required_fields):
+                            # 确保分数在有效范围内
+                            result['quality_score'] = max(1, min(10, float(result.get('quality_score', 5))))
+                            result['relevance_score'] = max(1, min(10, float(result.get('relevance_score', 5))))
+                            # 确保key_points是列表
+                            if 'key_points' not in result:
+                                result['key_points'] = []
+                            elif not isinstance(result['key_points'], list):
+                                result['key_points'] = [str(result['key_points'])]
+                            # 确保category存在
+                            if 'category' not in result:
+                                result['category'] = '其他'
+                            
+                            cleaned_results.append(result)
+                        else:
+                            print(f"文章 {i+1} 响应缺少必需字段: {result}")
+                            cleaned_results.append(None)
+                    else:
+                        print(f"文章 {i+1} 响应格式错误")
+                        cleaned_results.append(None)
+                
+                return cleaned_results
+            else:
+                print(f"无法找到有效JSON数组: {response[:200]}...")
+                return [None] * expected_count
+                
+        except json.JSONDecodeError as e:
+            print(f"JSON解析失败: {e}")
+            print(f"原始响应: {response[:500]}...")
+            return [None] * expected_count
+        except Exception as e:
+            print(f"解析批量响应时出错: {e}")
+            return [None] * expected_count
     
     def _filter_single_article(self, article) -> Optional[Dict]:
         """使用Langchain筛选单篇文章"""
@@ -236,7 +406,7 @@ class LangchainProcessor:
     
     def generate_report_chain(self, days: int = 1) -> str:
         """报告生成链"""
-        print(f"\n📊 执行报告生成链 (最近 {days} 天)")
+        print(f"\n执行报告生成链 (最近 {days} 天)")
         
         try:
             # 获取数据库统计
@@ -258,11 +428,11 @@ class LangchainProcessor:
             # 生成详细报告
             report = self._generate_detailed_report(selected_articles, days)
             
-            print("✅ 报告生成完成")
+            print("报告生成完成")
             return report
             
         except Exception as e:
-            print(f"❌ 报告生成失败: {e}")
+            print(f"报告生成失败: {e}")
             return ""
     
     def _generate_detailed_report(self, articles, days: int) -> str:
@@ -331,8 +501,8 @@ class LangchainProcessor:
     
     def run_full_workflow(self, days: int = 1, filter_limit: int = None, auto_export_excel: bool = True) -> Dict[str, Any]:
         """运行完整的Langchain工作流程"""
-        print(f"🚀 启动Langchain新闻处理工作流")
-        print(f"📅 处理时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"启动Langchain新闻处理工作流")
+        print(f"处理时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         try:
             # 步骤1: 邮件获取链
@@ -369,12 +539,12 @@ class LangchainProcessor:
                 print(report)
             
             if excel_file:
-                print(f"\n📊 已自动导出当日Excel文件: {excel_file}")
+                print(f"\n已自动导出当日Excel文件: {excel_file}")
             
             return result
             
         except Exception as e:
-            print(f"❌ 工作流程执行失败: {e}")
+            print(f"工作流程执行失败: {e}")
             return {
                 'emails_processed': 0,
                 'articles_added': 0,
@@ -389,7 +559,7 @@ class LangchainProcessor:
     def _auto_export_excel(self) -> str:
         """自动导出当天的Excel文件"""
         try:
-            print(f"\n📊 自动导出当日Excel文件...")
+            print(f"\n自动导出当日Excel文件...")
             
             # 导入excel_exporter
             from excel_exporter import excel_exporter
@@ -398,14 +568,14 @@ class LangchainProcessor:
             excel_file = excel_exporter.export_selected_articles(days=1)
             
             if excel_file:
-                print(f"✅ Excel文件已生成: {excel_file}")
+                print(f"Excel文件已生成: {excel_file}")
                 return excel_file
             else:
-                print("⚠️ 今天没有筛选通过的文章，未生成Excel文件")
+                print("今天没有筛选通过的文章，未生成Excel文件")
                 return ""
                 
         except Exception as e:
-            print(f"❌ Excel导出失败: {e}")
+            print(f"Excel导出失败: {e}")
             return ""
 
 
@@ -423,11 +593,11 @@ if __name__ == "__main__":
         # 测试完整工作流
         result = processor.run_full_workflow(days=1, filter_limit=3)
         
-        print(f"\n✅ 测试完成！")
+        print(f"\n测试完成！")
         print(f"架构: {result.get('architecture', 'unknown')}")
         print(f"状态: {result.get('workflow_status', 'unknown')}")
         
     except Exception as e:
-        print(f"❌ 测试失败: {e}")
+        print(f"测试失败: {e}")
         import traceback
         traceback.print_exc()

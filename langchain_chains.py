@@ -2,6 +2,7 @@
 基于Langchain的工作流链
 重构原有功能为标准的Langchain Chain架构
 """
+import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 
@@ -15,8 +16,15 @@ from langchain_core.output_parsers import StrOutputParser
 from pydantic import BaseModel, Field
 
 from email_fetcher import EmailFetcher
-from data_storage import db_manager
-from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, CONTENT_FILTER_PROMPT
+from data_storage import db_manager, NewsArticle
+from config import (
+    DEEPSEEK_API_KEY, 
+    DEEPSEEK_BASE_URL, 
+    CONTENT_FILTER_PROMPT,
+    LANGCHAIN_BATCH_SIZE,
+    LANGCHAIN_MAX_TOKENS,
+    LANGCHAIN_TEMPERATURE
+)
 
 
 class FilterResult(BaseModel):
@@ -102,33 +110,69 @@ class ArticleFilterChain(Chain):
     input_key: str = "limit"
     output_key: str = "filter_stats"
     
-    def __init__(self, **kwargs):
+    def __init__(self, batch_size: int = None, **kwargs):
         super().__init__(**kwargs)
         
-        # 初始化LLM
+        self.batch_size = batch_size or LANGCHAIN_BATCH_SIZE
+        
+        # 初始化LLM，增加max_tokens以支持批量处理
         self.llm = ChatOpenAI(
             model="deepseek-chat",
             openai_api_key=DEEPSEEK_API_KEY,
             openai_api_base=DEEPSEEK_BASE_URL,
-            temperature=0.3,
-            max_tokens=1000
+            temperature=LANGCHAIN_TEMPERATURE,
+            max_tokens=LANGCHAIN_MAX_TOKENS
         )
         
-        # 创建输出解析器
-        self.output_parser = PydanticOutputParser(pydantic_object=FilterResult)
-        
-        # 创建提示模板
-        self.prompt = PromptTemplate(
-            template=CONTENT_FILTER_PROMPT + "\n{format_instructions}",
-            input_variables=["title", "source", "summary", "publish_time", "url"],
-            partial_variables={"format_instructions": self.output_parser.get_format_instructions()}
+        # 创建批量筛选的提示模板
+        self.batch_prompt = PromptTemplate(
+            template="""你是一个专业的新闻内容分析师，负责评估和筛选新闻文章的质量和相关性。
+
+目标用户：汽车行业制造工程师
+关注领域：汽车工厂建设、AI技术、先进制造技术
+
+筛选标准：
+1. 优先保留：
+   - 汽车工厂建设、扩建、技术升级相关
+   - 汽车制造流程、生产线、质量控制
+   - 可应用于汽车工厂的AI技术（工业机器人、机器视觉、数字孪生、预测性维护等）
+   - 先进制造技术（增材制造/3D打印、自动化、智能制造、工业4.0等）
+   - 汽车供应链、材料技术、新能源汽车制造
+
+2. 保留但降低优先级：
+   - 通用制造技术（如果可应用于汽车工厂）
+   - 其他行业的先进制造案例（如果技术可借鉴）
+
+3. 明确剔除：
+   - 政治、社会、娱乐新闻
+   - 仅涉及非汽车行业制造的内容
+   - 汽车销售、市场营销、金融投资类新闻
+   - 与制造工程无关的汽车新闻（如车型发布、测评等）
+
+请分析以下 {num_articles} 篇新闻，并对每篇文章返回筛选结果：
+
+{articles_content}
+
+请返回一个JSON数组，包含 {num_articles} 个筛选结果，格式如下：
+[
+    {{
+        "is_selected": true/false,
+        "quality_score": 1-10的评分（内容深度和价值）,
+        "relevance_score": 1-10的评分（与汽车制造工程的相关性）,
+        "reason": "详细的筛选理由，说明为什么选择或拒绝",
+        "key_points": ["提取的关键技术要点或制造信息"],
+        "category": "分类：汽车工厂建设/AI制造技术/先进制造/供应链技术/其他"
+    }},
+    ...
+]""",
+            input_variables=["num_articles", "articles_content"]
         )
         
-        # 构建链
-        self.filter_chain = (
-            self.prompt 
+        # 构建批量筛选链
+        self.batch_filter_chain = (
+            self.batch_prompt 
             | self.llm 
-            | self.output_parser
+            | StrOutputParser()
         )
     
     @property
@@ -140,11 +184,11 @@ class ArticleFilterChain(Chain):
         return [self.output_key]
     
     def _call(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """执行文章筛选"""
+        """执行文章筛选（批量优化版本）"""
         limit = inputs.get(self.input_key, 50)
         
         print(f"\n{'='*50}")
-        print(f"🤖 Chain 2: 使用 LLM 筛选文章内容")
+        print(f"🤖 Chain 2: 使用 LLM 批量筛选文章内容")
         print(f"{'='*50}")
         
         # 获取未筛选的文章
@@ -154,7 +198,7 @@ class ArticleFilterChain(Chain):
             print("没有找到需要筛选的文章")
             return {self.output_key: {'total': 0, 'processed': 0, 'selected': 0, 'rejected': 0, 'failed': 0}}
         
-        print(f"开始筛选 {len(unfiltered_articles)} 篇文章...")
+        print(f"开始批量筛选 {len(unfiltered_articles)} 篇文章 (批处理大小: {self.batch_size})...")
         
         stats = {
             'total': len(unfiltered_articles),
@@ -164,48 +208,45 @@ class ArticleFilterChain(Chain):
             'failed': 0
         }
         
-        for i, article in enumerate(unfiltered_articles, 1):
-            print(f"处理第 {i}/{len(unfiltered_articles)} 篇: {article.title[:50]}...")
+        # 按批次处理文章
+        for batch_start in range(0, len(unfiltered_articles), self.batch_size):
+            batch_end = min(batch_start + self.batch_size, len(unfiltered_articles))
+            batch_articles = unfiltered_articles[batch_start:batch_end]
+            
+            print(f"处理批次 {batch_start//self.batch_size + 1}: 文章 {batch_start+1}-{batch_end}")
             
             try:
-                # 使用Langchain链进行筛选
-                filter_input = {
-                    "title": article.title,
-                    "source": article.source or "未知来源",
-                    "summary": article.summary or "无摘要",
-                    "publish_time": article.publish_time or "未知时间",
-                    "url": article.url[:100] + "..." if len(article.url) > 100 else article.url
-                }
+                # 批量筛选这组文章
+                batch_results = self._batch_filter_articles(batch_articles)
                 
-                result = self.filter_chain.invoke(filter_input)
-                
-                # 转换为字典格式
-                filter_result = {
-                    'is_selected': result.is_selected,
-                    'quality_score': result.quality_score,
-                    'relevance_score': result.relevance_score,
-                    'reason': result.reason,
-                    'key_points': result.key_points,
-                    'category': result.category
-                }
-                
-                # 更新数据库
-                success = db_manager.update_article_filter_result(article.id, filter_result)
-                if success:
-                    stats['processed'] += 1
-                    if result.is_selected:
-                        stats['selected'] += 1
-                        print(f"  ✅ 通过筛选")
+                # 处理结果
+                for i, (article, result) in enumerate(zip(batch_articles, batch_results)):
+                    if result:
+                        # 更新数据库
+                        success = db_manager.update_article_filter_result(article.id, result)
+                        if success:
+                            stats['processed'] += 1
+                            if result.get('is_selected'):
+                                stats['selected'] += 1
+                                print(f"  ✓ 文章 {batch_start+i+1}: 通过")
+                            else:
+                                stats['rejected'] += 1
+                                print(f"  ✗ 文章 {batch_start+i+1}: 未通过")
+                        else:
+                            stats['failed'] += 1
+                            print(f"  ⚠ 文章 {batch_start+i+1}: 数据库更新失败")
                     else:
-                        stats['rejected'] += 1
-                        print(f"  ❌ 未通过筛选")
-                else:
-                    stats['failed'] += 1
-                    print(f"  ⚠️ 数据库更新失败")
+                        stats['failed'] += 1
+                        print(f"  ⚠ 文章 {batch_start+i+1}: 筛选失败")
                 
             except Exception as e:
-                print(f"  ❌ 筛选失败: {e}")
-                stats['failed'] += 1
+                print(f"  ❌ 批次筛选失败: {e}")
+                # 如果批次失败，标记这批次所有文章为失败
+                stats['failed'] += len(batch_articles)
+            
+            # 批次间短暂延迟
+            if batch_end < len(unfiltered_articles):
+                time.sleep(0.5)
         
         print(f"\n✅ 筛选完成:")
         print(f"  - 总计: {stats['total']}")
@@ -215,6 +256,104 @@ class ArticleFilterChain(Chain):
         print(f"  - 处理失败: {stats['failed']}")
         
         return {self.output_key: stats}
+
+    def _batch_filter_articles(self, articles: List[NewsArticle]) -> List[Optional[Dict]]:
+        """批量筛选文章"""
+        try:
+            # 构建文章内容
+            articles_content = ""
+            for i, article in enumerate(articles, 1):
+                articles_content += f"""
+文章 {i}:
+标题：{article.title}
+来源：{article.source or "未知来源"}
+内容摘要：{article.summary or "无摘要"}
+发布时间：{article.publish_time or "未知时间"}
+原文链接：{article.url[:100] + "..." if len(article.url) > 100 else article.url}
+
+"""
+            
+            # 调用批量筛选链
+            response = self.batch_filter_chain.invoke({
+                "num_articles": len(articles),
+                "articles_content": articles_content.strip()
+            })
+            
+            # 解析响应
+            return self._parse_batch_response(response, len(articles))
+            
+        except Exception as e:
+            print(f"批量筛选链调用失败: {e}")
+            return [None] * len(articles)
+
+    def _parse_batch_response(self, response: str, expected_count: int) -> List[Optional[Dict]]:
+        """解析批量API响应"""
+        try:
+            import json
+            
+            # 尝试提取JSON数组
+            response = response.strip()
+            
+            # 查找JSON数组开始和结束位置
+            start_idx = response.find('[')
+            end_idx = response.rfind(']') + 1
+            
+            if start_idx != -1 and end_idx > start_idx:
+                json_str = response[start_idx:end_idx]
+                results = json.loads(json_str)
+                
+                if not isinstance(results, list):
+                    print(f"响应不是JSON数组格式")
+                    return [None] * expected_count
+                
+                # 验证结果数量
+                if len(results) != expected_count:
+                    print(f"响应数量不匹配：期望 {expected_count}，实际 {len(results)}")
+                    # 调整结果数量
+                    if len(results) < expected_count:
+                        results.extend([None] * (expected_count - len(results)))
+                    else:
+                        results = results[:expected_count]
+                
+                # 验证和清理每个结果
+                cleaned_results = []
+                for i, result in enumerate(results):
+                    if result and isinstance(result, dict):
+                        # 验证必需字段
+                        required_fields = ['is_selected', 'quality_score', 'relevance_score', 'reason']
+                        if all(field in result for field in required_fields):
+                            # 确保分数在有效范围内
+                            result['quality_score'] = max(1, min(10, float(result.get('quality_score', 5))))
+                            result['relevance_score'] = max(1, min(10, float(result.get('relevance_score', 5))))
+                            # 确保key_points是列表
+                            if 'key_points' not in result:
+                                result['key_points'] = []
+                            elif not isinstance(result['key_points'], list):
+                                result['key_points'] = [str(result['key_points'])]
+                            # 确保category存在
+                            if 'category' not in result:
+                                result['category'] = '其他'
+                            
+                            cleaned_results.append(result)
+                        else:
+                            print(f"文章 {i+1} 响应缺少必需字段: {result}")
+                            cleaned_results.append(None)
+                    else:
+                        print(f"文章 {i+1} 响应格式错误")
+                        cleaned_results.append(None)
+                
+                return cleaned_results
+            else:
+                print(f"无法找到有效JSON数组: {response[:200]}...")
+                return [None] * expected_count
+                
+        except json.JSONDecodeError as e:
+            print(f"JSON解析失败: {e}")
+            print(f"原始响应: {response[:500]}...")
+            return [None] * expected_count
+        except Exception as e:
+            print(f"解析批量响应时出错: {e}")
+            return [None] * expected_count
 
 
 class ReportGenerationChain(Chain):
